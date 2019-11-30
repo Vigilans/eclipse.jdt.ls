@@ -27,6 +27,7 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 import org.eclipse.core.resources.IFile;
+import org.eclipse.core.resources.IFolder;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IncrementalProjectBuilder;
@@ -76,6 +77,13 @@ public class WorkspaceDiagnosticsHandlerTest extends AbstractProjectsManagerBase
 	public void setup() throws Exception {
 		handler = new WorkspaceDiagnosticsHandler(connection, projectsManager, preferenceManager.getClientPreferences());
 		handler.addResourceChangeListener();
+	}
+
+	@After
+	@Override
+	public void cleanUp() throws Exception {
+		super.cleanUp();
+		handler.removeResourceChangeListener();
 	}
 
 	@Test
@@ -321,7 +329,7 @@ public class WorkspaceDiagnosticsHandlerTest extends AbstractProjectsManagerBase
 		// build workspace
 		reset(connection);
 		captor = ArgumentCaptor.forClass(PublishDiagnosticsParams.class);
-		BuildWorkspaceHandler bwh = new BuildWorkspaceHandler(connection, projectsManager);
+		BuildWorkspaceHandler bwh = new BuildWorkspaceHandler(projectsManager);
 		bwh.buildWorkspace(true, new NullProgressMonitor());
 		verify(connection, atLeastOnce()).publishDiagnostics(captor.capture());
 		allCalls = captor.getAllValues();
@@ -437,6 +445,27 @@ public class WorkspaceDiagnosticsHandlerTest extends AbstractProjectsManagerBase
 
 	}
 
+	@Test
+	public void testDeletePackage() throws Exception {
+		importProjects("eclipse/unresolvedtype");
+		IProject project = ResourcesPlugin.getWorkspace().getRoot().getProject("unresolvedtype");
+		List<IMarker> markers = ResourceUtils.getErrorMarkers(project);
+		assertTrue("unresolved type in Foo.java", markers.stream().anyMatch((marker) -> marker.getResource() != null && ((IFile) marker.getResource()).getName().endsWith("Foo.java")));
+
+		reset(connection);
+		ArgumentCaptor<PublishDiagnosticsParams> captor = ArgumentCaptor.forClass(PublishDiagnosticsParams.class);
+		IFolder folder = project.getFolder("/src/pckg");
+		assertTrue(folder.exists());
+		folder.delete(true, new NullProgressMonitor());
+		waitForBackgroundJobs();
+
+		verify(connection, atLeastOnce()).publishDiagnostics(captor.capture());
+		List<PublishDiagnosticsParams> allCalls = captor.getAllValues();
+		List<PublishDiagnosticsParams> errors = allCalls.stream().filter((p) -> p.getUri().endsWith("Foo.java")).collect(Collectors.toList());
+		assertTrue("Should update the children's diagnostics of the deleted package", errors.size() == 1);
+		assertTrue("Should clean up the children's diagnostics of the deleted package", errors.get(0).getDiagnostics().isEmpty());
+	}
+
 	private IMarker createMarker(int severity, String msg, int line, int start, int end) {
 		IMarker m = mock(IMarker.class);
 		when(m.exists()).thenReturn(true);
@@ -454,11 +483,6 @@ public class WorkspaceDiagnosticsHandlerTest extends AbstractProjectsManagerBase
 		when(m.getAttribute(IMavenConstants.MARKER_COLUMN_START, -1)).thenReturn(start);
 		when(m.getAttribute(IMavenConstants.MARKER_COLUMN_END, -1)).thenReturn(end);
 		return m;
-	}
-
-	@After
-	public void removeResourceChangeListener() {
-		handler.removeResourceChangeListener();
 	}
 
 }

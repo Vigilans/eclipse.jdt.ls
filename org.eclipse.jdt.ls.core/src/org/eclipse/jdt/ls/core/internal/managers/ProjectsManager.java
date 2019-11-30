@@ -36,6 +36,8 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.codehaus.plexus.util.StringUtils;
+import org.eclipse.buildship.core.internal.CorePlugin;
+import org.eclipse.buildship.core.internal.preferences.PersistentModel;
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IFolder;
 import org.eclipse.core.resources.IProject;
@@ -245,13 +247,22 @@ public class ProjectsManager implements ISaveParticipant {
 
 	private void deleteInvalidProjects(Collection<IPath> rootPaths, IProgressMonitor monitor) {
 		List<String> workspaceProjects = rootPaths.stream().map((IPath rootPath) -> ProjectUtils.getWorkspaceInvisibleProjectName(rootPath)).collect(Collectors.toList());
+		List<IProject> validGradleProjects = new ArrayList<>();
+		List<IProject> suspiciousGradleProjects = new ArrayList<>();
 		for (IProject project : getWorkspaceRoot().getProjects()) {
 			if (project.equals(this.getDefaultProject())) {
 				continue;
 			}
-			if (project.exists() && (ResourceUtils.isContainedIn(project.getLocation(), rootPaths) || ProjectUtils.isGradleProject(project)) || workspaceProjects.contains(project.getName())) {
+			if (project.exists() && (ResourceUtils.isContainedIn(project.getLocation(), rootPaths) || ProjectUtils.isGradleProject(project) || workspaceProjects.contains(project.getName()))) {
 				try {
 					project.getDescription();
+					if (ProjectUtils.isGradleProject(project)) {
+						if (ResourceUtils.isContainedIn(project.getLocation(), rootPaths)) {
+							validGradleProjects.add(project);
+						} else {
+							suspiciousGradleProjects.add(project);
+						}
+					}
 				} catch (CoreException e) {
 					try {
 						project.delete(true, monitor);
@@ -267,6 +278,62 @@ public class ProjectsManager implements ISaveParticipant {
 				}
 			}
 		}
+
+		List<IProject> unrelatedProjects = findUnrelatedGradleProjects(suspiciousGradleProjects, validGradleProjects);
+		unrelatedProjects.forEach((project) -> {
+			try {
+				project.delete(false, true, monitor);
+			} catch (CoreException e1) {
+				JavaLanguageServerPlugin.logException(e1.getMessage(), e1);
+			}
+		});
+	}
+
+	/**
+	 * Find those gradle projects not referenced by any gradle project in the current workspace.
+	 */
+	private List<IProject> findUnrelatedGradleProjects(List<IProject> suspiciousProjects, List<IProject> validProjects) {
+		suspiciousProjects.sort((IProject p1, IProject p2) -> p1.getLocation().toOSString().length() - p2.getLocation().toOSString().length());
+
+		List<IProject> unrelatedCandidates = new ArrayList<>();
+		Collection<IPath> validSubPaths = new ArrayList<>();
+		for (IProject suspiciousProject : suspiciousProjects) {
+			if (validSubPaths.contains(suspiciousProject.getFullPath().makeRelative())) {
+				continue;
+			}
+
+			// Check whether the suspicious gradle project is the parent project of the opening project.
+			boolean isParentProject = false;
+			Collection<IPath> subpaths = null;
+			PersistentModel model = CorePlugin.modelPersistence().loadModel(suspiciousProject);
+			if (model.isPresent()) {
+				subpaths = model.getSubprojectPaths();
+				if (!subpaths.isEmpty()) {
+					for (IProject validProject : validProjects) {
+						if (subpaths.contains(validProject.getFullPath().makeRelative())) {
+							isParentProject = true;
+							break;
+						}
+					}
+				}
+			}
+
+			if (isParentProject) {
+				validSubPaths.addAll(subpaths);
+			} else {
+				unrelatedCandidates.add(suspiciousProject);
+			}
+		}
+
+		List<IProject> result = new ArrayList<>();
+		// Exclude those projects which are the subprojects of the verified parent project.
+		for (IProject candidate : unrelatedCandidates) {
+			if (!validSubPaths.contains(candidate.getFullPath().makeRelative())) {
+				result.add(candidate);
+			}
+		}
+
+		return result;
 	}
 
 	private static IWorkspaceRoot getWorkspaceRoot() {

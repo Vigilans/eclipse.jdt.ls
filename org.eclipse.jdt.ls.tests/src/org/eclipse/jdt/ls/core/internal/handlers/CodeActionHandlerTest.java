@@ -20,6 +20,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.jdt.core.ICompilationUnit;
@@ -123,6 +124,34 @@ public class CodeActionHandlerTest extends AbstractCompilationUnitBasedTest {
 	}
 
 	@Test
+	public void testCodeAction_organizeImportsSourceActionOnly() throws Exception {
+		ICompilationUnit unit = getWorkingCopy(
+				"src/java/Foo.java",
+				"import java.util.List;\n"+
+				"public class Foo {\n"+
+				"	void foo() {\n"+
+				"		String bar = \"astring\";"+
+				"	}\n"+
+				"}\n");
+		CodeActionParams params = new CodeActionParams();
+		params.setTextDocument(new TextDocumentIdentifier(JDTUtils.toURI(unit)));
+		final Range range = CodeActionUtil.getRange(unit, "bar");
+		params.setRange(range);
+		CodeActionContext context = new CodeActionContext(
+			Arrays.asList(getDiagnostic(Integer.toString(IProblem.LocalVariableIsNeverUsed), range)),
+			Collections.singletonList(CodeActionKind.SourceOrganizeImports)
+		);
+		params.setContext(context);
+		List<Either<Command, CodeAction>> codeActions = getCodeActions(params);
+
+		Assert.assertNotNull(codeActions);
+		Assert.assertFalse("No organize imports actions were found", codeActions.isEmpty());
+		for (Either<Command, CodeAction> codeAction : codeActions) {
+			Assert.assertTrue("Unexpected kind:" + codeAction.getRight().getKind(), codeAction.getRight().getKind().startsWith(CodeActionKind.SourceOrganizeImports));
+		}
+	}
+
+	@Test
 	public void testCodeAction_refactorActionsOnly() throws Exception {
 		ICompilationUnit unit = getWorkingCopy(
 				"src/java/Foo.java",
@@ -203,6 +232,18 @@ public class CodeActionHandlerTest extends AbstractCompilationUnitBasedTest {
 		assertTrue("No refactor actions were found", hasRefactor);
 		boolean hasSource = codeActions.stream().anyMatch(codeAction -> codeAction.getRight().getKind().startsWith(CodeActionKind.Source));
 		assertTrue("No source actions were found", hasSource);
+
+		List<String> baseKinds = codeActions.stream().map(codeAction -> getBaseKind(codeAction.getRight().getKind())).collect(Collectors.toList());
+		assertTrue("quickfix actions should be ahead of refactor actions",  baseKinds.lastIndexOf(CodeActionKind.QuickFix) < baseKinds.indexOf(CodeActionKind.Refactor));
+		assertTrue("refactor actions should be ahead of source actions",  baseKinds.lastIndexOf(CodeActionKind.Refactor) < baseKinds.indexOf(CodeActionKind.Source));
+	}
+
+	private static String getBaseKind(String codeActionKind) {
+		if (codeActionKind.contains(".")) {
+			return codeActionKind.substring(0, codeActionKind.indexOf('.'));
+		} else {
+			return codeActionKind;
+		}
 	}
 
 	@Test

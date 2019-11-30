@@ -16,7 +16,6 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Stream;
 
 import org.apache.commons.lang3.StringUtils;
 import org.eclipse.core.runtime.CoreException;
@@ -36,7 +35,6 @@ import org.eclipse.jdt.ls.core.internal.corrections.DiagnosticsHelper;
 import org.eclipse.jdt.ls.core.internal.corrections.InnovationContext;
 import org.eclipse.jdt.ls.core.internal.corrections.QuickFixProcessor;
 import org.eclipse.jdt.ls.core.internal.corrections.RefactorProcessor;
-import org.eclipse.jdt.ls.core.internal.corrections.proposals.CUCorrectionProposal;
 import org.eclipse.jdt.ls.core.internal.corrections.proposals.ChangeCorrectionProposal;
 import org.eclipse.jdt.ls.core.internal.preferences.PreferenceManager;
 import org.eclipse.jdt.ls.core.internal.text.correction.CUCorrectionCommandProposal;
@@ -82,7 +80,7 @@ public class CodeActionHandler {
 		int end = DiagnosticsHelper.getEndOffset(unit, params.getRange());
 		InnovationContext context = new InnovationContext(unit, start, end - start);
 		context.setASTRoot(getASTRoot(unit));
-		// TODO (Yan): Problem locations should be calculated only for quickfix code actions.
+
 		IProblemLocationCore[] locations = this.getProblemLocationCores(unit, params.getContext().getDiagnostics());
 
 		List<String> codeActionKinds = new ArrayList<>();
@@ -99,51 +97,35 @@ public class CodeActionHandler {
 		}
 
 		List<ChangeCorrectionProposal> proposals = new ArrayList<>();
-		if (codeActionKinds.contains(CodeActionKind.QuickFix)) {
+		ChangeCorrectionProposalComparator comparator = new ChangeCorrectionProposalComparator();
+		if (containsKind(codeActionKinds, CodeActionKind.QuickFix)) {
 			try {
-
 				List<ChangeCorrectionProposal> quickfixProposals = this.quickFixProcessor.getCorrections(context, locations);
+				quickfixProposals.sort(comparator);
 				proposals.addAll(quickfixProposals);
 			} catch (CoreException e) {
 				JavaLanguageServerPlugin.logException("Problem resolving quick fix code actions", e);
 			}
 		}
 
-		if (codeActionKinds.contains(CodeActionKind.Refactor)) {
+		if (containsKind(codeActionKinds, CodeActionKind.Refactor)) {
 			try {
-				List<ChangeCorrectionProposal> refactorProposals = this.refactorProcessor.getProposals(params, context);
+				List<ChangeCorrectionProposal> refactorProposals = this.refactorProcessor.getProposals(params, context, locations);
+				refactorProposals.sort(comparator);
 				proposals.addAll(refactorProposals);
-
 			} catch (CoreException e) {
 				JavaLanguageServerPlugin.logException("Problem resolving refactor code actions", e);
 			}
 		}
 
-		if (codeActionKinds.contains(JavaCodeActionKind.QUICK_ASSIST)
-			// TODO (Yan): many refactor actions are still in quickAssistProcessor now, should move them to refactorProcessor and remove below condition later
-			|| codeActionKinds.contains(CodeActionKind.Refactor)
-		) {
+		if (containsKind(codeActionKinds, JavaCodeActionKind.QUICK_ASSIST)) {
 			try {
 				List<ChangeCorrectionProposal> quickassistProposals = this.quickAssistProcessor.getAssists(params, context, locations);
+				quickassistProposals.sort(comparator);
 				proposals.addAll(quickassistProposals);
 			} catch (CoreException e) {
 				JavaLanguageServerPlugin.logException("Problem resolving quick assist code actions", e);
 			}
-		}
-
-		// TODO (Yan): See https://github.com/eclipse/eclipse.jdt.ls/issues/1250
-		proposals.sort(new ChangeCorrectionProposalComparator());
-
-		// TODO (Yan): below block post-filters the proposals by CodeActionKind, can be removed in future if all above processors are doing right things.
-		if (params.getContext().getOnly() != null && !params.getContext().getOnly().isEmpty()) {
-			List<ChangeCorrectionProposal> resultList = new ArrayList<>();
-			for (ChangeCorrectionProposal proposal : proposals) {
-				Stream<String> acceptedActionKinds = params.getContext().getOnly().stream();
-				if (acceptedActionKinds.filter(kind -> proposal.getKind() != null && proposal.getKind().startsWith(kind)).findFirst().isPresent()) {
-					resultList.add(proposal);
-				}
-			}
-			proposals = resultList;
 		}
 
 		List<Either<Command, CodeAction>> codeActions = new ArrayList<>();
@@ -158,7 +140,7 @@ public class CodeActionHandler {
 			JavaLanguageServerPlugin.logException("Problem converting proposal to code actions", e);
 		}
 
-		if (codeActionKinds.contains(CodeActionKind.Source)) {
+		if (containsKind(codeActionKinds, CodeActionKind.Source)) {
 			codeActions.addAll(sourceAssistProcessor.getSourceActionCommands(params, context, locations));
 		}
 		return codeActions;
@@ -166,11 +148,6 @@ public class CodeActionHandler {
 
 	private Optional<Either<Command, CodeAction>> getCodeActionFromProposal(ChangeCorrectionProposal proposal, CodeActionContext context) throws CoreException {
 		String name = proposal.getName();
-
-		ICompilationUnit unit = null;
-		if (proposal instanceof CUCorrectionProposal) {
-			unit = ((CUCorrectionProposal) proposal).getCompilationUnit();
-		}
 
 		Command command;
 		if (proposal instanceof CUCorrectionCommandProposal) {
@@ -245,6 +222,10 @@ public class CodeActionHandler {
 			return p1.getName().compareToIgnoreCase(p2.getName());
 		}
 
+	}
+
+	private static boolean containsKind(List<String> codeActionKinds, String baseKind) {
+		return codeActionKinds.stream().anyMatch(kind -> kind.startsWith(baseKind));
 	}
 
 }
